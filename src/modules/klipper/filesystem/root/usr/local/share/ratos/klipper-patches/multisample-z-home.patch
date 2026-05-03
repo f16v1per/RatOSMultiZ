@@ -1,0 +1,211 @@
+diff --git a/klippy/extras/homing.py b/klippy/extras/homing.py
+index 918f37e1..53d3ebd1 100644
+--- a/klippy/extras/homing.py
++++ b/klippy/extras/homing.py
+@@ -175,7 +175,8 @@ class Homing:
+     def get_trigger_position(self, stepper_name):
+         return self.trigger_mcu_pos[stepper_name]
+     def set_stepper_adjustment(self, stepper_name, adjustment):
+-        self.adjust_pos[stepper_name] = adjustment
++        self.adjust_pos[stepper_name] = (
++            self.adjust_pos.get(stepper_name, 0.) + adjustment)
+     def _fill_coord(self, coord):
+         # Fill in any None entries in 'coord' with current toolhead position
+         thcoord = list(self.toolhead.get_position())
+@@ -185,6 +186,93 @@ class Homing:
+         return thcoord
+     def set_homed_position(self, pos):
+         self.toolhead.set_position(self._fill_coord(pos))
++    def _retract_and_home(self, endstops, forcepos, movepos,
++                          retract_dist, retract_speed, home_speed):
++        startpos = self._fill_coord(forcepos)
++        homepos = self._fill_coord(movepos)
++        axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
++        move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
++        retract_r = min(1., retract_dist / move_d)
++        retractpos = [hp - ad * retract_r for hp, ad in zip(homepos, axes_d)]
++        self.toolhead.move(retractpos, retract_speed)
++        startpos = [rp - ad * retract_r for rp, ad in zip(retractpos, axes_d)]
++        self.toolhead.set_position(startpos)
++        hmove = HomingMove(self.printer, endstops)
++        hmove.homing_move(homepos, home_speed)
++        no_movement = hmove.check_no_movement()
++        if no_movement is not None:
++            raise self.printer.command_error(
++                "Endstop %s still triggered after retract" % (no_movement,))
++        return hmove
++    def _get_home_sampling_params(self, endstops, hi):
++        for mcu_endstop, name in endstops:
++            if hasattr(mcu_endstop, "get_home_sampling_params"):
++                params = mcu_endstop.get_home_sampling_params(hi)
++                if params['samples'] > 1:
++                    return params
++        return None
++    def _get_homing_trigger_positions(self, hmove):
++        return {sp.stepper_name: sp.stepper.mcu_to_commanded_position(
++                    sp.trig_pos)
++                for sp in hmove.stepper_positions}
++    def _get_homing_sample_value(self, sample):
++        return sum(sample.values()) / len(sample)
++    def _report_home_samples(self, samples, sample_count):
++        gcode = self.printer.lookup_object('gcode')
++        sample_values = [self._get_homing_sample_value(s) for s in samples]
++        range_value = max(sample_values) - min(sample_values)
++        sample_text = ", ".join(["%.6f" % (value,)
++                                 for value in sample_values])
++        delta_text = ""
++        if len(sample_values) > 1:
++            delta_text = " deltas [%s]" % (
++                ", ".join(["%+.6f" % (sample_values[i] - sample_values[i-1],)
++                           for i in range(1, len(sample_values))]),)
++        gcode.respond_info(
++            "G28 Z samples %d/%d: [%s]%s range %.6f" % (
++                len(samples), sample_count, sample_text,
++                delta_text, range_value))
++    def _average_homing_samples(self, samples):
++        inv_count = 1. / float(len(samples))
++        return {name: sum([s[name] for s in samples]) * inv_count
++                for name in samples[0]}
++    def _calc_homing_sample_result(self, samples, method):
++        if method != 'median':
++            return self._average_homing_samples(samples)
++        samples = sorted(samples, key=self._get_homing_sample_value)
++        middle = len(samples) // 2
++        if len(samples) & 1:
++            return samples[middle]
++        return self._average_homing_samples(samples[middle-1:middle+1])
++    def _sample_home_rails(self, endstops, forcepos, movepos, params):
++        samples = []
++        retries = 0
++        sample_count = params['samples']
++        while len(samples) < sample_count:
++            hmove = self._retract_and_home(
++                endstops, forcepos, movepos, params['retract_dist'],
++                params['lift_speed'], params['speed'])
++            samples.append(self._get_homing_trigger_positions(hmove))
++            self._report_home_samples(samples, sample_count)
++            sample_values = [self._get_homing_sample_value(s)
++                             for s in samples]
++            if max(sample_values) - min(sample_values) > params['tolerance']:
++                if retries >= params['retries']:
++                    raise self.printer.command_error(
++                        "Z home samples exceed z_home_samples_tolerance")
++                logging.info("Z home samples exceed tolerance. Retrying...")
++                retries += 1
++                samples = []
++        result = self._calc_homing_sample_result(samples, params['result'])
++        gcode = self.printer.lookup_object('gcode')
++        gcode.respond_info(
++            "G28 Z final %s from samples: %.6f" % (
++                params['result'], self._get_homing_sample_value(result)))
++        last_sample = samples[-1]
++        adjustments = {}
++        for stepper_name, trigger_pos in last_sample.items():
++            adjustments[stepper_name] = trigger_pos - result[stepper_name]
++        return hmove, adjustments
+     def home_rails(self, rails, forcepos, movepos):
+         # Notify of upcoming homing operation
+         self.printer.send_event("homing:home_rails_begin", self, rails)
+@@ -199,32 +287,23 @@ class Homing:
+         hi = rails[0].get_homing_info()
+         hmove = HomingMove(self.printer, endstops)
+         hmove.homing_move(homepos, hi.speed)
++        sample_params = self._get_home_sampling_params(endstops, hi)
++        sample_adjustments = {}
+         # Perform second home
+-        if hi.retract_dist:
+-            # Retract
+-            startpos = self._fill_coord(forcepos)
+-            homepos = self._fill_coord(movepos)
+-            axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
+-            move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+-            retract_r = min(1., hi.retract_dist / move_d)
+-            retractpos = [hp - ad * retract_r
+-                          for hp, ad in zip(homepos, axes_d)]
+-            self.toolhead.move(retractpos, hi.retract_speed)
+-            # Home again
+-            startpos = [rp - ad * retract_r
+-                        for rp, ad in zip(retractpos, axes_d)]
+-            self.toolhead.set_position(startpos)
+-            hmove = HomingMove(self.printer, endstops)
+-            hmove.homing_move(homepos, hi.second_homing_speed)
+-            if hmove.check_no_movement() is not None:
+-                raise self.printer.command_error(
+-                    "Endstop %s still triggered after retract"
+-                    % (hmove.check_no_movement(),))
++        if sample_params is not None:
++            hmove, sample_adjustments = self._sample_home_rails(
++                endstops, forcepos, movepos, sample_params)
++        elif hi.retract_dist:
++            hmove = self._retract_and_home(
++                endstops, forcepos, movepos, hi.retract_dist,
++                hi.retract_speed, hi.second_homing_speed)
+         # Signal home operation complete
+         self.toolhead.flush_step_generation()
+         self.trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
+                                 for sp in hmove.stepper_positions}
+         self.adjust_pos = {}
++        for stepper_name, adjustment in sample_adjustments.items():
++            self.set_stepper_adjustment(stepper_name, adjustment)
+         self.printer.send_event("homing:home_rails_end", self, rails)
+         if any(self.adjust_pos.values()):
+             # Apply any homing offsets
+diff --git a/klippy/extras/probe.py b/klippy/extras/probe.py
+index 28187bc5..688b8e8d 100644
+--- a/klippy/extras/probe.py
++++ b/klippy/extras/probe.py
+@@ -212,6 +212,7 @@ class HomingViaProbeHelper:
+         self.mcu_probe = mcu_probe
+         self.probe_offsets = probe_offsets
+         self.param_helper = param_helper
++        self.mcu_probe.get_home_sampling_params = self.get_home_sampling_params
+         self.multi_probe_pending = False
+         self.z_min_position = lookup_minimum_z(config)
+         self.results = []
+@@ -258,6 +259,8 @@ class HomingViaProbeHelper:
+         if pin_params['invert'] or pin_params['pullup']:
+             raise pins.error("Can not pullup/invert probe virtual endstop")
+         return self.mcu_probe
++    def get_home_sampling_params(self, homing_info):
++        return self.param_helper.get_home_params(homing_info)
+     # Helper to convert probe based commands to use homing module
+     def start_probe_session(self, gcmd):
+         self.mcu_probe.multi_probe_begin()
+@@ -311,6 +314,19 @@ class ProbeParameterHelper:
+                                                  minval=0.)
+         self.samples_retries = config.getint('samples_tolerance_retries', 0,
+                                              minval=0)
++        # Multi-sample support for G28 Z via probe:z_virtual_endstop
++        self.z_home_samples = config.getint('z_home_samples', 1, minval=1)
++        self.z_home_speed = config.getfloat('z_home_speed', None, above=0.)
++        self.z_home_lift_speed = config.getfloat('z_home_lift_speed', None,
++                                                 above=0.)
++        self.z_home_retract_dist = config.getfloat(
++            'z_home_retract_dist', 2., above=0.)
++        self.z_home_samples_result = config.getchoice(
++            'z_home_samples_result', atypes, 'average')
++        self.z_home_samples_tolerance = config.getfloat(
++            'z_home_samples_tolerance', 0.100, minval=0.)
++        self.z_home_samples_retries = config.getint(
++            'z_home_samples_tolerance_retries', 0, minval=0)
+     def get_probe_params(self, gcmd=None):
+         if gcmd is None:
+             gcmd = self.dummy_gcode_cmd
+@@ -331,6 +347,17 @@ class ProbeParameterHelper:
+                 'samples_tolerance': samples_tolerance,
+                 'samples_tolerance_retries': samples_retries,
+                 'samples_result': samples_result}
++    def get_home_params(self, homing_info):
++        return {
++            'samples': self.z_home_samples,
++            'speed': self.z_home_speed or homing_info.second_homing_speed,
++            'lift_speed': (self.z_home_lift_speed
++                           or homing_info.retract_speed),
++            'retract_dist': self.z_home_retract_dist,
++            'result': self.z_home_samples_result,
++            'tolerance': self.z_home_samples_tolerance,
++            'retries': self.z_home_samples_retries,
++        }
+ 
+ # Helper to track multiple probe attempts in a single command
+ class ProbeSessionHelper:

@@ -53,6 +53,9 @@ usermod -a -G "${KLIPPER_USER_GROUPS}" "${BASE_USER}"
 ## Clone klipper repo
 pushd "/home/${BASE_USER}" &> /dev/null || exit 1
 gitclone KLIPPER_REPO klipper
+echo_green "Applying RaTOS Klipper patches ..."
+sudo -u "${BASE_USER}" git -C "${KLIPPER_SRC_DIR}" apply \
+    /usr/local/share/ratos/klipper-patches/multisample-z-home.patch
 
 ## Create needed dirs
 for dir in ${KLIPPER_USER_DIRS}; do
