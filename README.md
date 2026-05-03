@@ -1,46 +1,50 @@
-![RatOS](site/static/img/logos/Logo-black.svg)
+# RatOS Multi-Sample Z Home Patch
 
-<p align="center">
-<a href="https://github.com/Rat-OS/RatOS/releases"><img src="https://img.shields.io/github/downloads/Rat-OS/RatOS/total?color=%2368da0b" /></a>
-<a href="http://discord.gg/ratrig"><img src="https://img.shields.io/discord/582187371529764864?color=%235865F2&label=discord&logo=discord&logoColor=white&style=flat" /></a>
-</p>
+This repo contains a small RatOS Klipper patch for multi-sample `G28 Z` homing via `probe:z_virtual_endstop`.
 
-# What is RatOS
+It targets RatOS Klipper `ratos/v2.1.x` around commit `2817b348`.
 
-RatOS is a preconfigured Raspberry Pi image that aims to make it as painless as possible to get Klipper, Mainsail and Moonraker up and running on your printer. It is developed and maintained by Mikkel Schmidt (miklschmidt#2036 on the Rat Rig Unofficial Discord) with help from the community.
+## Install On A RatOS Pi
 
-# How to use RatOS
+```bash
+cd ~
+git clone -b v2.1.x https://github.com/f16v1per/RatOSMultiZ.git
+~/RatOSMultiZ/install-multisample-z-home.sh
+```
 
-Start by reading the [Documentation](https://os.ratrig.com)
+If you already cloned it:
 
-# Build your own / Developing
+```bash
+cd ~/RatOSMultiZ
+git pull
+./install-multisample-z-home.sh
+```
 
-## Requirements
+The script patches `~/klipper` by default. To target another checkout:
 
--   [qemu-arm-static](http://packages.debian.org/sid/qemu-user-static)
--   [CustomPiOS](https://github.com/guysoft/CustomPiOS)
--   [Downloaded Raspbian Image](http://www.raspbian.org/)
--   Bash
--   Git
--   [Docker](https://docs.docker.com/engine/install/ubuntu/)
--   [Docker-Compose](https://docs.docker.com/compose/install/)
--   QEMU for emulation
--   About 5GB of free diskspace for the build
--   Yarn & Docusaurus for docs
+```bash
+KLIPPER_DIR=/path/to/klipper ./install-multisample-z-home.sh
+```
 
-## Building
+## Probe Config
 
-To prevent you have to deal with an entire build chain setup, \
-simply fork this repository.
+Add the settings you want to your `[probe]` section:
 
-Enable the workflows in your fork and you are good to go. \
-On each push you make, an image is build and uploaded as an artifact.
+```ini
+[probe]
+z_home_samples: 3
+z_home_samples_result: median
+z_home_samples_tolerance: 0.05
+z_home_samples_tolerance_retries: 2
+```
 
-If you want or need to build locally please visit [CustomPiOS](https://github.com/guysoft/CustomPiOS). \
-Especially ["Build a Distro From within Raspbian / Debian / Ubuntu / CustomPiOS Distros"](https://github.com/guysoft/CustomPiOS#build-a-distro-from-within-raspbian--debian--ubuntu--custompios-distros)
+Optional speed and retract overrides:
 
-## HUGE THANK YOU to the Sponsors
+```ini
+z_home_speed: 5
+z_home_lift_speed: 10
+z_home_retract_dist: 2
+```
 
-![Rat Rig](sponsors/ratrig-logo.png)
+Then restart Klipper after saving config changes.
 
-![Intermode](sponsors/intermode-logo.png)
