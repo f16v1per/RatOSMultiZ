@@ -41,8 +41,9 @@ diff --git a/klippy/extras/homing.py b/klippy/extras/homing.py
 +                    return params
 +        return None
 +    def _get_homing_trigger_positions(self, hmove):
-+        return {sp.stepper_name: sp.stepper.mcu_to_commanded_position(
-+                    sp.trig_pos)
++        return {sp.stepper_name: (sp.start_cmd_pos
++                                  + (sp.trig_pos - sp.start_pos)
++                                  * sp.stepper.get_step_dist())
 +                for sp in hmove.stepper_positions}
 +    def _get_homing_sample_value(self, sample):
 +        return sum(sample.values()) / len(sample)
