@@ -11,7 +11,7 @@ diff --git a/klippy/extras/homing.py b/klippy/extras/homing.py
      def _fill_coord(self, coord):
          # Fill in any None entries in 'coord' with current toolhead position
          thcoord = list(self.toolhead.get_position())
-@@ -186,6 +187,93 @@ class Homing:
+@@ -186,6 +187,94 @@ class Homing:
          return thcoord
      def set_homed_position(self, pos):
          self.toolhead.set_position(self._fill_coord(pos))
@@ -106,7 +106,7 @@ diff --git a/klippy/extras/homing.py b/klippy/extras/homing.py
      def home_rails(self, rails, forcepos, movepos):
          # Notify of upcoming homing operation
          self.printer.send_event("homing:home_rails_begin", self, rails)
-@@ -200,32 +288,23 @@ class Homing:
+@@ -200,32 +289,23 @@ class Homing:
          hi = rails[0].get_homing_info()
          hmove = HomingMove(self.printer, endstops)
          hmove.homing_move(homepos, hi.speed)
